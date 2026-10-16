@@ -173,3 +173,7 @@ VideotecaMac illustrates several engineering problems that appear simple at UI l
 | What dominates scan latency? | Report cold/warm cache time, network calls, external-tool processes, and UI responsiveness by library size. |
 
 Use synthetic filenames and redistributable test clips, separate curated-correction titles from held-out titles, and record commit, macOS/Swift versions, external-tool versions, cache state, and provider responses. These are proposed evaluations, not reported benchmark results. Verify code licensing and external-service/media permissions before redistributing a research artifact.
+
+## Istruzioni per agenti AI (Codex e Copilot)
+
+Le modifiche proposte da Codex, Copilot e altri agenti devono seguire [AGENTS.md](AGENTS.md): semplicità, modello mentale dell'architettura, test di integrazione, reversibilità delle scelte, riduzione del debito tecnico, comunicazione e tutela dei dati privati. GitHub Copilot usa inoltre [.github/copilot-instructions.md](.github/copilot-instructions.md), che rinvia alla guida comune senza duplicarla.
