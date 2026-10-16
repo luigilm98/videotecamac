@@ -664,7 +664,7 @@ final class LibraryViewModel: ObservableObject {
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
-        panel.directoryURL = URL(fileURLWithPath: "/Users/luigi/Documents", isDirectory: true)
+        panel.directoryURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Documents", isDirectory: true)
         if panel.runModal() == .OK, let url = panel.urls.first {
             setSources([LibrarySource(url: url)])
         }
