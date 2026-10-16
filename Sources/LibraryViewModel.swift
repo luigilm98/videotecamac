@@ -48,7 +48,7 @@ final class LibraryViewModel: ObservableObject {
         self.metadataStore = MetadataStore(applicationSupportURL: applicationSupportURL)
         self.onlineSettingsStore = OnlineSettingsStore(applicationSupportURL: applicationSupportURL)
         let externalFilmURL = URL(fileURLWithPath: "/Volumes/ssdex/film", isDirectory: true)
-        let localFilmURL = URL(fileURLWithPath: "/Users/luigi/Documents/film", isDirectory: true)
+        let localFilmURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Documents/film", isDirectory: true)
         let defaultFilmURL = FileManager.default.fileExists(atPath: externalFilmURL.path) ? externalFilmURL : localFilmURL
         self.sourceStore = SourceStore(
             applicationSupportURL: applicationSupportURL,
