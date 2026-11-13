@@ -70,7 +70,9 @@ struct SidebarView: View {
                 .padding(.top, 20)
 
                 VStack(alignment: .leading, spacing: 6) {
-                    SidebarButton(title: "Tutti i film", systemImage: "rectangle.stack", filter: .all, model: model)
+                    SidebarButton(title: "Tutto il catalogo", systemImage: "rectangle.stack", filter: .all, model: model)
+                    SidebarButton(title: "Film", systemImage: "film", filter: .movies, model: model)
+                    SidebarButton(title: "Serie TV", systemImage: "tv", filter: .series, model: model)
                     SidebarButton(title: "Preferiti", systemImage: "star", filter: .favorites, model: model)
                     SidebarButton(title: "Da vedere", systemImage: "play.circle", filter: .unwatched, model: model)
                 }
@@ -85,21 +87,16 @@ struct SidebarView: View {
                 }
 
                 SidebarSection(title: "Generi") {
-                    ForEach(model.allGenres, id: \.self) { genre in
-                        SidebarButton(title: genre, systemImage: "tag.fill", filter: .genre(genre), model: model)
-                    }
+                    CatalogFacetList(entries: model.genreFacets, icon: "tag", filter: LibraryFilter.genre, model: model)
+                    SidebarButton(title: "Senza genere", systemImage: "tag.slash", filter: .withoutGenre, model: model)
                 }
 
                 SidebarSection(title: "Registi") {
-                    ForEach(model.allDirectors, id: \.self) { director in
-                        SidebarButton(title: director, systemImage: "person.crop.rectangle", filter: .director(director), model: model)
-                    }
+                    CatalogFacetList(entries: model.directorFacets, icon: "person.crop.rectangle", filter: LibraryFilter.director, model: model)
                 }
 
                 SidebarSection(title: "Attori") {
-                    ForEach(model.allActors, id: \.self) { actor in
-                        SidebarButton(title: actor, systemImage: "person.2", filter: .actor(actor), model: model)
-                    }
+                    CatalogFacetList(entries: model.actorFacets, icon: "person.2", filter: LibraryFilter.actor, model: model)
                 }
             }
             .padding(.horizontal, 16)
@@ -129,11 +126,49 @@ struct SidebarSection<Content: View>: View {
     }
 }
 
+struct CatalogFacetList: View {
+    let entries: [CatalogFacet]
+    let icon: String
+    let filter: (String) -> LibraryFilter
+    @ObservedObject var model: LibraryViewModel
+    @State private var query = ""
+    @State private var expanded = false
+
+    var body: some View {
+        let search = CatalogClassification.personKey(query)
+        let matches = search.isEmpty ? entries : entries.filter { $0.id.contains(search) }
+        let visible = search.isEmpty && !expanded ? Array(matches.prefix(8)) : matches
+
+        TextField("Cerca nell’elenco", text: $query)
+            .textFieldStyle(.roundedBorder)
+            .accessibilityLabel("Cerca nell’elenco")
+        LazyVStack(alignment: .leading, spacing: 4) {
+            ForEach(visible) { entry in
+                SidebarButton(title: entry.name, systemImage: icon, filter: filter(entry.name), model: model, count: entry.count)
+            }
+        }
+        if matches.isEmpty {
+            Text("Nessun risultato")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } else if search.isEmpty && entries.count > 8 {
+            Button(expanded ? "Mostra meno" : "Mostra tutti (\(entries.count))") {
+                expanded.toggle()
+            }
+            .buttonStyle(.plain)
+            .font(.caption)
+            .padding(.leading, 10)
+        }
+    }
+}
+
 struct SidebarButton: View {
     let title: String
     let systemImage: String
     let filter: LibraryFilter
     @ObservedObject var model: LibraryViewModel
+
+    var count: Int? = nil
 
     var isSelected: Bool { model.selectedFilter == filter }
 
@@ -141,7 +176,16 @@ struct SidebarButton: View {
         Button {
             model.selectedFilter = filter
         } label: {
-            Label(title, systemImage: systemImage)
+            HStack {
+                Label(title, systemImage: systemImage)
+                    .lineLimit(1)
+                if let count {
+                    Spacer(minLength: 4)
+                    Text(count, format: .number)
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
                 .lineLimit(1)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.vertical, 8)
@@ -232,7 +276,7 @@ struct LibraryGridView: View {
 
                 Spacer()
 
-                if model.isScanning || model.isGeneratingCovers || model.isFetchingOnlineMetadata || model.isEnrichingAllMetadata || model.isDownloadingSubtitles || model.isOrganizingLibrary {
+                if model.isScanning || model.isGeneratingCovers || model.isFetchingOnlineMetadata || model.isEnrichingAllMetadata || model.isDownloadingSubtitles {
                     ProgressView()
                         .controlSize(.small)
                 }
@@ -1149,8 +1193,6 @@ struct SourceSettingsView: View {
                                 .controlSize(.small)
                         }
                     }
-
-                    Toggle("Scarica automaticamente sottotitoli italiani mancanti", isOn: $model.autoDownloadItalianSubtitles)
 
                     HStack(spacing: 10) {
                         SecureField("Api-Key OpenSubtitles", text: $model.openSubtitlesApiKey)

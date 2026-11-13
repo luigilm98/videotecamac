@@ -31,22 +31,22 @@ struct Movie: Identifiable, Hashable {
         onlineMetadata?.title?.nilIfBlank ?? title
     }
 
+    var displayDirectors: [String] {
+        let online = CatalogClassification.people(onlineMetadata?.directors ?? [])
+        return online.isEmpty ? CatalogClassification.people([director]) : online
+    }
+
     var displayDirector: String {
-        let directors = onlineMetadata?.directors ?? []
-        let knownDirector = ManualMovieCorrections.normalized(director) == ManualMovieCorrections.normalized("Sconosciuto")
-            ? nil
-            : director
-        let combined = Movie.unique([knownDirector].compactMap { $0 } + directors)
-        return combined.isEmpty ? director : combined.joined(separator: ", ")
+        displayDirectors.joined(separator: ", ").nilIfBlank ?? "Sconosciuto"
     }
 
     var displayActors: [String] {
-        let cast = onlineMetadata?.cast ?? []
-        return actors.isEmpty ? cast : Movie.unique(actors + cast)
+        let online = CatalogClassification.people(onlineMetadata?.cast ?? [])
+        return online.isEmpty ? CatalogClassification.people(actors) : online
     }
 
     var displayGenres: [String] {
-        Movie.unique((onlineMetadata?.genres ?? []) + genres)
+        CatalogClassification.genres(from: (onlineMetadata?.genres ?? []) + inferredGenres, custom: userGenres)
     }
 
     var displayYear: Int? {
@@ -348,21 +348,20 @@ struct SeriesGroup: Identifiable, Hashable {
     }
 
     var displayGenres: [String] {
-        Movie.unique((onlineMetadata?.genres ?? []) + sortedEpisodes.flatMap { $0.movie.displayGenres })
+        Movie.unique(CatalogClassification.genres(from: onlineMetadata?.genres ?? []) + episodes.flatMap { $0.movie.displayGenres })
     }
 
     var displayActors: [String] {
-        Movie.unique((onlineMetadata?.cast ?? []) + sortedEpisodes.flatMap { $0.movie.displayActors })
+        let online = CatalogClassification.people(onlineMetadata?.cast ?? [])
+        return online.isEmpty ? CatalogClassification.people(episodes.flatMap { $0.movie.displayActors }) : online
+    }
+
+    var displayDirectors: [String] {
+        CatalogClassification.people(onlineMetadata?.directors ?? [])
     }
 
     var displayDirector: String {
-        if let directors = onlineMetadata?.directors, !directors.isEmpty {
-            return directors.joined(separator: ", ")
-        }
-        let values = Movie.unique(sortedEpisodes.map(\.movie.displayDirector))
-        let unknownKey = ManualMovieCorrections.normalized("Sconosciuto")
-        let filtered = values.filter { ManualMovieCorrections.normalized($0) != unknownKey }
-        return filtered.prefix(3).joined(separator: ", ").nilIfBlank ?? "Serie TV"
+        displayDirectors.joined(separator: ", ").nilIfBlank ?? "Serie TV"
     }
 
     var favorite: Bool {
@@ -441,6 +440,10 @@ struct LibraryItem: Identifiable, Hashable {
 
     var displayActors: [String] {
         series?.displayActors ?? movie?.displayActors ?? []
+    }
+
+    var displayDirectors: [String] {
+        series?.displayDirectors ?? movie?.displayDirectors ?? []
     }
 
     var displayDirector: String {
@@ -718,6 +721,8 @@ enum LibrarySortMode: String, CaseIterable, Identifiable {
 
 enum LibraryFilter: Hashable {
     case all
+    case movies
+    case series
     case favorites
     case unwatched
     case withoutGenre
@@ -737,7 +742,9 @@ enum LibraryFilter: Hashable {
 
     var title: String {
         switch self {
-        case .all: return "Tutti i film"
+        case .all: return "Tutto il catalogo"
+        case .movies: return "Film"
+        case .series: return "Serie TV"
         case .favorites: return "Preferiti"
         case .unwatched: return "Da vedere"
         case .withoutGenre: return "Senza genere"

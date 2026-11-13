@@ -1,6 +1,8 @@
 import Foundation
 
 enum VideoProbe {
+    private static let subtitleExtensions: Set<String> = ["srt", "vtt", "ass", "ssa", "sub"]
+
     static func containerTitle(fileURL: URL) -> String? {
         guard let ffprobeURL = ffprobeExecutableURL() else { return nil }
 
@@ -99,7 +101,15 @@ enum VideoProbe {
     }
 
     static func technicalSignature(for fileURL: URL, fileIdentity: String) -> String {
-        let sidecars = externalSubtitleURLs(for: fileURL)
+        technicalSignature(
+            for: fileURL,
+            fileIdentity: fileIdentity,
+            subtitleCandidates: subtitleCandidates(in: fileURL.deletingLastPathComponent())
+        )
+    }
+
+    static func technicalSignature(for fileURL: URL, fileIdentity: String, subtitleCandidates: [URL]) -> String {
+        let sidecars = matchingSubtitles(for: fileURL, candidates: subtitleCandidates)
             .compactMap { url -> String? in
                 guard let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]) else {
                     return nil
@@ -153,19 +163,25 @@ enum VideoProbe {
     }
 
     private static func externalSubtitleURLs(for fileURL: URL) -> [URL] {
-        let subtitleExtensions: Set<String> = ["srt", "vtt", "ass", "ssa", "sub"]
-        let folder = fileURL.deletingLastPathComponent()
-        let base = fileURL.deletingPathExtension().lastPathComponent
-        guard let items = try? FileManager.default.contentsOfDirectory(
+        matchingSubtitles(for: fileURL, candidates: subtitleCandidates(in: fileURL.deletingLastPathComponent()))
+    }
+
+    private static func subtitleCandidates(in folder: URL) -> [URL] {
+        let items = (try? FileManager.default.contentsOfDirectory(
             at: folder,
             includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey],
             options: [.skipsHiddenFiles]
-        ) else {
-            return []
-        }
+        )) ?? []
+        return subtitleCandidates(from: items)
+    }
 
-        return items.filter { item in
-            guard subtitleExtensions.contains(item.pathExtension.lowercased()) else { return false }
+    static func subtitleCandidates(from items: [URL]) -> [URL] {
+        items.filter { subtitleExtensions.contains($0.pathExtension.lowercased()) }
+    }
+
+    private static func matchingSubtitles(for fileURL: URL, candidates: [URL]) -> [URL] {
+        let base = fileURL.deletingPathExtension().lastPathComponent
+        return candidates.filter { item in
             let name = item.deletingPathExtension().lastPathComponent
             return name == base || name.hasPrefix(base + ".") || name.hasPrefix(base + "-")
         }.sorted { $0.lastPathComponent.localizedCaseInsensitiveCompare($1.lastPathComponent) == .orderedAscending }

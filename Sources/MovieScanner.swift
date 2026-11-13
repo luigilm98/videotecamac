@@ -2,24 +2,17 @@ import Foundation
 
 enum MovieScanner {
     static let videoExtensions: Set<String> = ["mkv", "mp4", "avi", "mov", "m4v", "mpg", "mpeg"]
-    private static let ignoredPathFragments = ["/_extra/", "/Featurettes/", "/featurettes/", "/Extras/", "/extras/"]
     private static let extraDirectoryNames: Set<String> = [
         "_extra", "featurettes", "extras", "extra", "sample", "samples",
         "trailer", "trailers"
     ]
-    private static let ignoredDirectoryNames: Set<String> = [
-        "_extra", "featurettes", "extras", "extra", "sample", "samples",
-        "trailer", "trailers", "output", "tmp", "temp", "pdf", "pdfs",
-        "info", "subs", "sub", "subtitles", "screens", "screenshots"
-    ]
 
     static func scan(sources: [LibrarySource], metadataStore: MetadataStore, coverCacheURL: URL) -> [Movie] {
         var movies: [Movie] = []
-        var extras: [MovieExtra] = []
         var seenPaths = Set<String>()
 
         for source in sources where source.exists {
-            let root = source.url
+            let root = source.url.resolvingSymlinksInPath()
             if source.isDirectory {
                 movies.append(contentsOf: scanDirectory(
                     rootURL: root,
@@ -27,7 +20,6 @@ enum MovieScanner {
                     coverCacheURL: coverCacheURL,
                     seenPaths: &seenPaths
                 ))
-                extras.append(contentsOf: collectExtras(rootURL: root))
             } else if isVideo(root), let movie = movie(
                 fileURL: root,
                 rootURL: root.deletingLastPathComponent(),
@@ -39,7 +31,18 @@ enum MovieScanner {
             }
         }
 
-        let moviesWithExtras = attach(extras: extras, to: movies, rootURLs: sources.filter(\.isDirectory).map(\.url))
+        let roots = sources.filter(\.isDirectory).map { $0.url.resolvingSymlinksInPath() }
+        let extras = movies.compactMap { movie -> MovieExtra? in
+            guard let root = rootURL(containing: movie.fileURL, from: roots),
+                  isExtraPath(movie.fileURL, rootURL: root) else { return nil }
+            return MovieExtra(
+                id: movie.id, fileURL: movie.fileURL,
+                title: extraTitle(for: movie.fileURL, rootURL: root),
+                kind: extraKind(for: movie.fileURL, rootURL: root, fileSize: movie.fileSize),
+                fileSize: movie.fileSize, modifiedDate: movie.modifiedDate
+            )
+        }
+        let moviesWithExtras = attach(extras: extras, to: movies, rootURLs: roots)
         return moviesWithExtras.sorted { lhs, rhs in
             lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
         }
@@ -68,6 +71,7 @@ enum MovieScanner {
                 continue
             }
 
+            let subtitleCandidates = VideoProbe.subtitleCandidates(from: items)
             for item in items {
                 let values = try? item.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey])
                 if values?.isSymbolicLink == true {
@@ -87,7 +91,8 @@ enum MovieScanner {
                     rootURL: rootURL,
                     metadataStore: metadataStore,
                     coverCacheURL: coverCacheURL,
-                    seenPaths: &seenPaths
+                    seenPaths: &seenPaths,
+                    subtitleCandidates: subtitleCandidates
                 ) {
                     movies.append(movie)
                 }
@@ -101,52 +106,23 @@ enum MovieScanner {
         let standardizedPath = directory.standardizedFileURL.path
         guard standardizedPath.hasPrefix(rootPath + "/") else { return false }
 
-        let nameKey = ManualMovieCorrections.normalized(directory.lastPathComponent)
-        if ignoredDirectoryNames.contains(nameKey) { return false }
-        if ignoredPathFragments.contains(where: { standardizedPath.contains($0) }) { return false }
         return true
-    }
-
-    private static func collectExtras(rootURL: URL) -> [MovieExtra] {
-        guard let enumerator = FileManager.default.enumerator(
-            at: rootURL,
-            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey],
-            options: [.skipsHiddenFiles]
-        ) else {
-            return []
-        }
-
-        return enumerator.compactMap { item -> MovieExtra? in
-            guard let url = item as? URL,
-                  isVideo(url),
-                  isExtraPath(url, rootURL: rootURL),
-                  (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else {
-                return nil
-            }
-
-            let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
-            let fileSize = Int64(values?.fileSize ?? 0)
-            let standardizedPath = url.standardizedFileURL.path
-            return MovieExtra(
-                id: standardizedPath,
-                fileURL: url,
-                title: extraTitle(for: url, rootURL: rootURL),
-                kind: extraKind(for: url, rootURL: rootURL, fileSize: fileSize),
-                fileSize: fileSize,
-                modifiedDate: values?.contentModificationDate ?? .distantPast
-            )
-        }
     }
 
     private static func attach(extras: [MovieExtra], to movies: [Movie], rootURLs: [URL]) -> [Movie] {
         guard !extras.isEmpty, !movies.isEmpty else { return movies }
         var result = movies
+        let extraIDs = Set(extras.map(\.id))
+        var attachedIDs = Set<String>()
 
         for extra in extras.sorted(by: { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }) {
-            guard let matchIndex = bestMovieIndex(for: extra, in: result, rootURLs: rootURLs) else { continue }
+            guard let root = rootURL(containing: extra.fileURL, from: rootURLs),
+                  SeriesDetector.episodeInfo(for: extra.fileURL, rootURL: root) == nil,
+                  let matchIndex = bestMovieIndex(for: extra, in: result, rootURL: root, extraIDs: extraIDs) else { continue }
             if !result[matchIndex].extras.contains(where: { $0.id == extra.id }) {
                 result[matchIndex].extras.append(extra)
             }
+            attachedIDs.insert(extra.id)
         }
 
         for index in result.indices {
@@ -158,23 +134,42 @@ enum MovieScanner {
             }
         }
 
-        return result
+        return result.filter { !attachedIDs.contains($0.id) }
     }
 
-    private static func bestMovieIndex(for extra: MovieExtra, in movies: [Movie], rootURLs: [URL]) -> Int? {
-        let extraPathKey = ManualMovieCorrections.normalized(extra.fileURL.deletingPathExtension().path)
-        let extraTokens = Set(extraPathKey.split(separator: " ").map(String.init).filter { $0.count > 2 })
-        let extraRoot = rootURL(containing: extra.fileURL, from: rootURLs)
-        let extraDirector = extraRoot.flatMap { firstRelativeComponent(of: extra.fileURL, rootURL: $0) }
+    private static func bestMovieIndex(for extra: MovieExtra, in movies: [Movie], rootURL: URL, extraIDs: Set<String>) -> Int? {
+        var components = relativeComponents(of: extra.fileURL, rootURL: rootURL)
+        if !components.isEmpty {
+            components[components.count - 1] = extra.fileURL.deletingPathExtension().lastPathComponent
+        }
+        let extraPathKey = ManualMovieCorrections.normalized(components.joined(separator: " "))
+        let extraDirector = components.first
+        let isLegacyExtra = components.dropLast().contains { $0 == "_extra" }
+        if isLegacyExtra {
+            let kind = ManualMovieCorrections.normalized(components.last ?? "")
+            let markers = ["trailer", "featurette", "intervista", "interview", "making of", "sample", "deleted scene", "dietro le quinte"]
+            guard markers.contains(where: { (" " + kind + " ").contains(" " + $0 + " ") }) else { return nil }
+        } else if let bonusDirectoryIndex = components.dropLast().firstIndex(where: {
+            extraDirectoryNames.contains(ManualMovieCorrections.normalized($0))
+        }), bonusDirectoryIndex > 0 {
+            let parentComponents = Array(components.prefix(bonusDirectoryIndex))
+            let siblings = movies.indices.filter { index in
+                let movie = movies[index]
+                return !extraIDs.contains(movie.id)
+                    && Array(relativeComponents(of: movie.fileURL, rootURL: rootURL).dropLast()) == parentComponents
+            }
+            if siblings.count == 1 { return siblings.first }
+        }
 
         var best: (index: Int, score: Int)?
+        var runnerUp = 0
 
         for (index, movie) in movies.enumerated() {
+            guard !extraIDs.contains(movie.id),
+                  let director = firstRelativeComponent(of: movie.fileURL, rootURL: rootURL) else { continue }
             var score = 0
 
-            if let extraRoot,
-               let extraDirector,
-               firstRelativeComponent(of: movie.fileURL, rootURL: extraRoot) == extraDirector {
+            if director == extraDirector {
                 score += 25
             }
 
@@ -188,32 +183,26 @@ enum MovieScanner {
                 movie.onlineMetadata?.originalTitle
             ].compactMap { $0 })
 
+            var titleScore = 0
             for title in titles {
                 let titleKey = ManualMovieCorrections.normalized(title)
                 guard titleKey.count > 3 else { continue }
-                if extraPathKey.contains(titleKey) {
-                    score += 95 + min(25, titleKey.count / 2)
-                    continue
-                }
-
-                let titleTokens = Set(titleKey.split(separator: " ").map(String.init).filter { $0.count > 2 })
-                guard !titleTokens.isEmpty else { continue }
-                let overlap = titleTokens.intersection(extraTokens).count
-                if overlap == titleTokens.count {
-                    score += 70
-                } else if overlap >= max(2, titleTokens.count - 1) {
-                    score += 42
-                } else if overlap >= 2 {
-                    score += 24
+                if (" " + extraPathKey + " ").contains(" " + titleKey + " ") {
+                    titleScore = max(titleScore, 95 + min(25, titleKey.count / 2))
                 }
             }
+            guard titleScore > 0 else { continue }
+            score += titleScore
 
             if best == nil || score > best!.score {
+                runnerUp = best?.score ?? 0
                 best = (index, score)
+            } else {
+                runnerUp = max(runnerUp, score)
             }
         }
 
-        guard let best, best.score >= 70 else { return nil }
+        guard let best, best.score >= 95, best.score - runnerUp >= 20 else { return nil }
         return best.index
     }
 
@@ -286,15 +275,13 @@ enum MovieScanner {
         rootURL: URL,
         metadataStore: MetadataStore,
         coverCacheURL: URL,
-        seenPaths: inout Set<String>
+        seenPaths: inout Set<String>,
+        subtitleCandidates: [URL]? = nil
     ) -> Movie? {
         let standardizedPath = fileURL.standardizedFileURL.path
         guard isVideo(fileURL),
-              !seenPaths.contains(standardizedPath),
-              !ignoredPathFragments.contains(where: { standardizedPath.contains($0) }) else { return nil }
+              !seenPaths.contains(standardizedPath) else { return nil }
         guard !fileURL.lastPathComponent.hasPrefix("._") else { return nil }
-        let fileKey = ManualMovieCorrections.normalized(fileURL.deletingPathExtension().lastPathComponent)
-        guard fileKey != "sample", fileKey != "trailer" else { return nil }
 
         let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey])
         guard values?.isRegularFile == true else { return nil }
@@ -315,7 +302,14 @@ enum MovieScanner {
             )
         )
         let coverURL = CoverGenerator.existingCover(for: fileURL, cacheDirectory: coverCacheURL)
-        let technicalIdentity = VideoProbe.technicalSignature(for: fileURL, fileIdentity: identity)
+        let technicalIdentity: String
+        if let subtitleCandidates {
+            technicalIdentity = VideoProbe.technicalSignature(
+                for: fileURL, fileIdentity: identity, subtitleCandidates: subtitleCandidates
+            )
+        } else {
+            technicalIdentity = VideoProbe.technicalSignature(for: fileURL, fileIdentity: identity)
+        }
         let technicalInfo = metadata.technicalSignature == technicalIdentity ? metadata.technicalInfo : nil
 
         return Movie(
@@ -357,9 +351,7 @@ enum MovieScanner {
 
     private static func parse(fileURL: URL, rootURL: URL) -> ParsedMovieInfo? {
         let rawBaseName = fileURL.deletingPathExtension().lastPathComponent
-        let parent = fileURL.deletingLastPathComponent().lastPathComponent
-        let rootName = rootURL.lastPathComponent
-        let fallbackDirector = parent == rootName ? "Sconosciuto" : parent
+        let fallbackDirector = "Sconosciuto"
         let fileCandidate = releaseCleanedTitle(rawBaseName)
         let parentCandidate = folderCandidate(for: fileURL, rootURL: rootURL, fileCandidate: fileCandidate)
         let baseName = preferredParseName(
@@ -367,16 +359,21 @@ enum MovieScanner {
             parentCandidate: parentCandidate,
             rawFileName: rawBaseName
         )
-        guard !isGenericContainerName(baseName) else { return nil }
+        if isGenericContainerName(baseName) {
+            return ManualMovieCorrections.apply(
+                fileURL: fileURL, title: rawBaseName, director: fallbackDirector,
+                year: nil, actors: [], inferredGenres: []
+            )
+        }
 
         if let match = firstMatch(
             in: baseName,
-            pattern: #"^(.+?)\s+-\s+(.+?)\s+\((\d{4})\)\s+-\s+(.+)$"#
+            pattern: #"^(.+?)\s+-\s+(.+?)\s+\((\d{4})\)(?:\s+-\s+(.+))?$"#
         ) {
             let director = clean(match[1])
             let title = clean(match[2])
             let year = Int(match[3])
-            let actorPart = clean(match[4])
+            let actorPart = match.count > 4 ? clean(match[4]) : ""
             var inferredGenres: [String] = []
             var actors: [String] = []
 
@@ -538,7 +535,7 @@ enum MovieScanner {
 
                 if values?.isDirectory == true {
                     let key = ManualMovieCorrections.normalized(item.lastPathComponent)
-                    if !ignoredDirectoryNames.contains(key) {
+                    if !extraDirectoryNames.contains(key) {
                         pendingDirectories.append(item)
                     }
                     continue

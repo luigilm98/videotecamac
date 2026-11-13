@@ -195,7 +195,7 @@ enum SeriesDetector {
     private static func isLibraryRootName(_ key: String) -> Bool {
         let roots = [
             "film", "films", "movie", "movies", "video", "videos", "videoteca",
-            "cinema", "download", "downloads", "scaricati", "cb01",
+            "cinema", "archivio film", "download", "downloads", "scaricati", "cb01",
             "cb01 downloader", "ssd", "ssdex"
         ]
         return roots.contains(key)

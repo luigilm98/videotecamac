@@ -5,7 +5,10 @@ import SwiftUI
 @MainActor
 final class LibraryViewModel: ObservableObject {
     @Published var allMovies: [Movie] = []
-    @Published var libraryItems: [LibraryItem] = []
+    @Published private(set) var libraryItems: [LibraryItem] = []
+    private(set) var genreFacets: [CatalogFacet] = []
+    private(set) var directorFacets: [CatalogFacet] = []
+    private(set) var actorFacets: [CatalogFacet] = []
     @Published var sources: [LibrarySource] = []
     @Published var searchText: String = ""
     @Published var sortMode: LibrarySortMode = .title
@@ -16,21 +19,17 @@ final class LibraryViewModel: ObservableObject {
     @Published var isFetchingOnlineMetadata: Bool = false
     @Published var isEnrichingAllMetadata: Bool = false
     @Published var isDownloadingSubtitles: Bool = false
-    @Published var isOrganizingLibrary: Bool = false
     @Published var showingSources: Bool = false
     @Published var tmdbToken: String = ""
     @Published var openSubtitlesApiKey: String = ""
     @Published var openSubtitlesUsername: String = ""
     @Published var openSubtitlesPassword: String = ""
-    @Published var autoDownloadItalianSubtitles: Bool = false
-    @Published var autoOrganizeOnScan: Bool = true
     @Published var thumbnailWidth: Double = 178
     @Published var statusText: String = "Pronto"
 
     private let applicationSupportURL: URL
     private let coverCacheURL: URL
     private let onlineArtworkURL: URL
-    private let organizationLogURL: URL
     private let metadataStore: MetadataStore
     private let sourceStore: SourceStore
     private let onlineSettingsStore: OnlineSettingsStore
@@ -44,7 +43,6 @@ final class LibraryViewModel: ObservableObject {
         self.applicationSupportURL = supportRoot.appendingPathComponent("Videoteca Offline", isDirectory: true)
         self.coverCacheURL = applicationSupportURL.appendingPathComponent("Covers", isDirectory: true)
         self.onlineArtworkURL = applicationSupportURL.appendingPathComponent("OnlineArtwork", isDirectory: true)
-        self.organizationLogURL = applicationSupportURL.appendingPathComponent("organization-log.jsonl")
         self.metadataStore = MetadataStore(applicationSupportURL: applicationSupportURL)
         self.onlineSettingsStore = OnlineSettingsStore(applicationSupportURL: applicationSupportURL)
         let externalFilmURL = URL(fileURLWithPath: "/Volumes/ssdex/film", isDirectory: true)
@@ -59,8 +57,6 @@ final class LibraryViewModel: ObservableObject {
         self.openSubtitlesApiKey = onlineSettingsStore.settings.openSubtitlesApiKey
         self.openSubtitlesUsername = onlineSettingsStore.settings.openSubtitlesUsername
         self.openSubtitlesPassword = onlineSettingsStore.settings.openSubtitlesPassword
-        self.autoDownloadItalianSubtitles = onlineSettingsStore.settings.autoDownloadItalianSubtitles
-        self.autoOrganizeOnScan = true
         self.thumbnailWidth = min(270, max(130, onlineSettingsStore.settings.thumbnailWidth))
         try? FileManager.default.createDirectory(at: coverCacheURL, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: onlineArtworkURL, withIntermediateDirectories: true)
@@ -79,7 +75,17 @@ final class LibraryViewModel: ObservableObject {
     }
 
     var filteredItems: [LibraryItem] {
-        var items = libraryItems.filter { itemMatches($0, filter: selectedFilter) }
+        var items: [LibraryItem]
+        switch selectedFilter {
+        case .genre(let genre):
+            items = itemsForFacet(in: genreFacets, matching: genre)
+        case .director(let director):
+            items = itemsForFacet(in: directorFacets, matching: director)
+        case .actor(let actor):
+            items = itemsForFacet(in: actorFacets, matching: actor)
+        default:
+            items = libraryItems.filter { itemMatches($0, filter: selectedFilter) }
+        }
 
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         if !query.isEmpty {
@@ -91,89 +97,6 @@ final class LibraryViewModel: ObservableObject {
 
     var filteredMovies: [Movie] {
         filteredItems.flatMap(\.movies)
-    }
-
-    private var legacyFilteredMovies: [Movie] {
-        var movies = allMovies
-
-        switch selectedFilter {
-        case .all:
-            break
-        case .favorites:
-            movies = movies.filter(\.favorite)
-        case .unwatched:
-            movies = movies.filter { !$0.watched }
-        case .withoutGenre:
-            movies = movies.filter { $0.displayGenres.isEmpty }
-        case .qualityReview:
-            movies = movies.filter { $0.metadataQuality == .review }
-        case .weakMetadata:
-            movies = movies.filter { !$0.qualityIssues.isEmpty }
-        case .missingPoster:
-            movies = movies.filter { $0.posterURL == nil }
-        case .noSubtitles:
-            movies = movies.filter { $0.technicalInfo?.subtitleText == "Nessuno" }
-        case .italianAudio:
-            movies = movies.filter { $0.technicalInfo?.hasAudioLanguage(["ita", "it"]) == true }
-        case .multiAudio:
-            movies = movies.filter { ($0.technicalInfo?.audioTracks.count ?? 0) > 1 }
-        case .fullHD:
-            movies = movies.filter { movie in
-                guard let info = movie.technicalInfo,
-                      let width = info.width,
-                      let height = info.height else { return false }
-                return (width >= 1900 || height >= 1000) && width < 3840 && height < 2160
-            }
-        case .fourK:
-            movies = movies.filter { movie in
-                guard let info = movie.technicalInfo,
-                      let width = info.width,
-                      let height = info.height else { return false }
-                return width >= 3840 || height >= 2160
-            }
-        case .shortMovies:
-            movies = movies.filter { ($0.technicalInfo?.durationSeconds ?? .infinity) <= 90 * 60 }
-        case .recentImports:
-            let cutoff = Date().addingTimeInterval(-14 * 24 * 60 * 60)
-            movies = movies.filter { $0.modifiedDate >= cutoff }
-        case .genre(let genre):
-            movies = movies.filter { $0.displayGenres.contains { $0.caseInsensitiveCompare(genre) == .orderedSame } }
-        case .director(let director):
-            movies = movies.filter { $0.displayDirector.caseInsensitiveCompare(director) == .orderedSame }
-        case .actor(let actor):
-            movies = movies.filter { $0.displayActors.contains { $0.caseInsensitiveCompare(actor) == .orderedSame } }
-        }
-
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !query.isEmpty {
-            movies = movies.filter { movie in
-                let technicalValues = [
-                    movie.technicalInfo?.durationText,
-                    movie.technicalInfo?.resolutionText,
-                    movie.technicalInfo?.primaryAudioText,
-                    movie.technicalInfo?.extraAudioText,
-                    movie.technicalInfo?.subtitleText,
-                    movie.technicalInfo?.videoCodecText
-                ].compactMap { $0 }
-                let haystack = ([movie.title, movie.displayTitle, movie.director, movie.displayDirector, movie.yearText, movie.displayYearText] + movie.displayActors + movie.displayGenres + technicalValues)
-                    .joined(separator: " ")
-                return haystack.localizedCaseInsensitiveContains(query)
-            }
-        }
-
-        return movies.sorted(by: sorter)
-    }
-
-    var allGenres: [String] {
-        Movie.unique(libraryItems.flatMap(\.displayGenres)).sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
-    }
-
-    var allDirectors: [String] {
-        Movie.unique(libraryItems.map(\.displayDirector)).sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
-    }
-
-    var allActors: [String] {
-        Movie.unique(libraryItems.flatMap(\.displayActors)).sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
     }
 
     var countText: String {
@@ -208,82 +131,28 @@ final class LibraryViewModel: ObservableObject {
     }
 
     func scan() {
-        guard !isScanning, !isOrganizingLibrary else { return }
+        guard !isScanning else { return }
         isScanning = true
         statusText = "Scansione sorgenti..."
         let sourceList = sources
         let store = metadataStore
         let coverRoot = coverCacheURL
-        let artworkRoot = onlineArtworkURL
-        let logURL = organizationLogURL
-        let token = tmdbToken
-        let shouldOrganize = true
 
         Task.detached(priority: .userInitiated) {
-            let prunedCount = store.pruneMissingFiles(within: sourceList)
             var movies = MovieScanner.scan(sources: sourceList, metadataStore: store, coverCacheURL: coverRoot)
-            let repairedCount = Self.repairIncompatibleOnlineMetadata(in: movies, metadataStore: store)
-            if prunedCount > 0 || repairedCount > 0 {
+            if Self.repairIncompatibleOnlineMetadata(in: movies, metadataStore: store) > 0 {
                 movies = MovieScanner.scan(sources: sourceList, metadataStore: store, coverCacheURL: coverRoot)
             }
-
-            let initialMovies = movies
+            let scannedMovies = movies
             await MainActor.run {
-                self.publishScannedMovies(initialMovies)
-                self.isScanning = false
-                self.statusText = "Trovati \(self.libraryItems.count) titoli"
-            }
-
-            if shouldOrganize {
-                await MainActor.run {
-                    self.isOrganizingLibrary = true
-                    self.statusText = "Controllo nuovi film da catalogare..."
-                }
-                let summary = await MovieOrganizer.organize(
-                    movies: movies,
-                    sources: sourceList,
-                    metadataStore: store,
-                    coverCacheURL: coverRoot,
-                    artworkDirectory: artworkRoot,
-                    logURL: logURL,
-                    tmdbToken: token
-                ) { message in
-                    await MainActor.run {
-                        self.statusText = message
-                    }
-                }
-                movies = MovieScanner.scan(sources: sourceList, metadataStore: store, coverCacheURL: coverRoot)
-                let repairedCount = Self.repairIncompatibleOnlineMetadata(in: movies, metadataStore: store)
-                if repairedCount > 0 {
-                    movies = MovieScanner.scan(sources: sourceList, metadataStore: store, coverCacheURL: coverRoot)
-                }
-                let organizedMovies = movies
-                await MainActor.run {
-                    self.publishScannedMovies(organizedMovies)
-                    self.isOrganizingLibrary = false
-                    self.statusText = "Catalogati \(summary.movedCount), saltati \(summary.skippedCount), errori \(summary.failedCount)"
-                }
-            }
-
-            await MainActor.run {
-                self.statusText = "Controllo titoli interni video..."
-            }
-            let cleanedTitleCount = Self.cleanGenericContainerTitles(in: movies, metadataStore: store)
-            if cleanedTitleCount > 0 {
-                movies = MovieScanner.scan(sources: sourceList, metadataStore: store, coverCacheURL: coverRoot)
-            }
-
-            let finalMovies = movies
-            await MainActor.run {
-                self.publishScannedMovies(finalMovies)
+                self.publishScannedMovies(scannedMovies)
                 self.isScanning = false
                 self.statusText = "Trovati \(self.libraryItems.count) titoli"
             }
             await self.generateMissingTechnicalInfo()
-            await self.downloadMissingItalianSubtitles()
             await self.generateMissingCovers()
-            await self.enrichMissingOnlineMetadata()
             await self.enrichMissingSeriesMetadata()
+            await self.enrichMissingOnlineMetadata()
         }
     }
 
@@ -573,19 +442,17 @@ final class LibraryViewModel: ObservableObject {
     func saveOnlineSettings() {
         onlineSettingsStore.update(OnlineSettings(
             tmdbToken: tmdbToken.trimmingCharacters(in: .whitespacesAndNewlines),
-            autoOrganizeOnScan: true,
+            autoOrganizeOnScan: false,
             thumbnailWidth: thumbnailWidth,
             openSubtitlesApiKey: openSubtitlesApiKey.trimmingCharacters(in: .whitespacesAndNewlines),
             openSubtitlesUsername: openSubtitlesUsername.trimmingCharacters(in: .whitespacesAndNewlines),
             openSubtitlesPassword: openSubtitlesPassword,
-            autoDownloadItalianSubtitles: autoDownloadItalianSubtitles
+            autoDownloadItalianSubtitles: false
         ))
         tmdbToken = onlineSettingsStore.settings.tmdbToken
         openSubtitlesApiKey = onlineSettingsStore.settings.openSubtitlesApiKey
         openSubtitlesUsername = onlineSettingsStore.settings.openSubtitlesUsername
         openSubtitlesPassword = onlineSettingsStore.settings.openSubtitlesPassword
-        autoDownloadItalianSubtitles = onlineSettingsStore.settings.autoDownloadItalianSubtitles
-        autoOrganizeOnScan = true
         thumbnailWidth = min(270, max(130, onlineSettingsStore.settings.thumbnailWidth))
         statusText = "Impostazioni online salvate"
     }
@@ -594,56 +461,15 @@ final class LibraryViewModel: ObservableObject {
         thumbnailWidth = min(270, max(130, value))
         onlineSettingsStore.update(OnlineSettings(
             tmdbToken: tmdbToken.trimmingCharacters(in: .whitespacesAndNewlines),
-            autoOrganizeOnScan: true,
+            autoOrganizeOnScan: false,
             thumbnailWidth: thumbnailWidth,
             openSubtitlesApiKey: openSubtitlesApiKey.trimmingCharacters(in: .whitespacesAndNewlines),
             openSubtitlesUsername: openSubtitlesUsername.trimmingCharacters(in: .whitespacesAndNewlines),
             openSubtitlesPassword: openSubtitlesPassword,
-            autoDownloadItalianSubtitles: autoDownloadItalianSubtitles
+            autoDownloadItalianSubtitles: false
         ))
     }
 
-    func organizeNewMovies() {
-        guard !isOrganizingLibrary else { return }
-        isOrganizingLibrary = true
-        statusText = "Catalogo nuovi film..."
-        let sourceList = sources
-        let store = metadataStore
-        let coverRoot = coverCacheURL
-        let artworkRoot = onlineArtworkURL
-        let logURL = organizationLogURL
-        let token = tmdbToken
-        let movies = allMovies.isEmpty
-            ? MovieScanner.scan(sources: sourceList, metadataStore: store, coverCacheURL: coverRoot)
-            : allMovies
-
-        Task.detached(priority: .userInitiated) {
-            let summary = await MovieOrganizer.organize(
-                movies: movies,
-                sources: sourceList,
-                metadataStore: store,
-                coverCacheURL: coverRoot,
-                artworkDirectory: artworkRoot,
-                logURL: logURL,
-                tmdbToken: token
-            ) { message in
-                await MainActor.run {
-                    self.statusText = message
-                }
-            }
-
-            let updated = MovieScanner.scan(sources: sourceList, metadataStore: store, coverCacheURL: coverRoot)
-            await MainActor.run {
-                self.publishScannedMovies(updated)
-                self.isOrganizingLibrary = false
-                self.statusText = "Catalogati \(summary.movedCount), saltati \(summary.skippedCount), errori \(summary.failedCount)"
-            }
-            await self.generateMissingTechnicalInfo()
-            await self.downloadMissingItalianSubtitles()
-            await self.generateMissingCovers()
-            await self.enrichMissingSeriesMetadata()
-        }
-    }
 
     func chooseFolderSource() {
         let panel = NSOpenPanel()
@@ -740,10 +566,9 @@ final class LibraryViewModel: ObservableObject {
         }
     }
 
-    func generateMissingTechnicalInfo() async {
-        let movies = allMovies.filter { movie in
-            movie.technicalInfo == nil || movie.technicalSignature != movie.technicalIdentity
-        }
+    private func generateMissingTechnicalInfo() async {
+        // MovieScanner has already invalidated cached details with a stale signature.
+        let movies = allMovies.filter { $0.technicalInfo == nil }
         guard !movies.isEmpty else { return }
 
         await MainActor.run {
@@ -757,21 +582,22 @@ final class LibraryViewModel: ObservableObject {
                 self.statusText = "Dettagli video \(index + 1)/\(movies.count): \(movie.title)"
             }
 
-            let technicalInfo = await Task.detached(priority: .utility) {
-                VideoProbe.probe(fileURL: movie.fileURL)
+            let result = await Task.detached(priority: .utility) {
+                guard let info = VideoProbe.probe(fileURL: movie.fileURL) else { return nil as (VideoTechnicalInfo, String)? }
+                return (info, movie.technicalIdentity)
             }.value
 
-            guard let technicalInfo else { continue }
+            guard let (technicalInfo, signature) = result else { continue }
 
             await MainActor.run {
                 self.updateMetadata(for: movie.id) { metadata in
                     metadata.technicalInfo = technicalInfo
-                    metadata.technicalSignature = movie.technicalIdentity
+                    metadata.technicalSignature = signature
                     metadata.fileIdentity = movie.fileIdentity
                 }
                 self.updateMovie(movie.id) {
                     $0.technicalInfo = technicalInfo
-                    $0.technicalSignature = movie.technicalIdentity
+                    $0.technicalSignature = signature
                 }
             }
         }
@@ -787,7 +613,7 @@ final class LibraryViewModel: ObservableObject {
             username: openSubtitlesUsername.trimmingCharacters(in: .whitespacesAndNewlines),
             password: openSubtitlesPassword
         )
-        guard autoDownloadItalianSubtitles, credentials.isConfigured, !isDownloadingSubtitles else { return }
+        guard credentials.isConfigured, !isDownloadingSubtitles else { return }
 
         let retryInterval: TimeInterval = 24 * 60 * 60
         let candidates = allMovies.filter { movie in
@@ -895,10 +721,20 @@ final class LibraryViewModel: ObservableObject {
         }
     }
 
+    private func itemsForFacet(in facets: [CatalogFacet], matching name: String) -> [LibraryItem] {
+        let key = CatalogClassification.personKey(name)
+        guard let facet = facets.first(where: { $0.id == key }) else { return [] }
+        return libraryItems.filter { facet.itemIDs.contains($0.id) }
+    }
+
     private func itemMatches(_ item: LibraryItem, filter: LibraryFilter) -> Bool {
         switch filter {
         case .all:
             return true
+        case .movies:
+            return item.kind == .movie
+        case .series:
+            return item.kind == .series
         case .favorites:
             return item.favorite
         case .unwatched:
@@ -936,12 +772,8 @@ final class LibraryViewModel: ObservableObject {
         case .recentImports:
             let cutoff = Date().addingTimeInterval(-14 * 24 * 60 * 60)
             return item.modifiedDate >= cutoff
-        case .genre(let genre):
-            return item.displayGenres.contains { $0.caseInsensitiveCompare(genre) == .orderedSame }
-        case .director(let director):
-            return item.displayDirector.caseInsensitiveCompare(director) == .orderedSame
-        case .actor(let actor):
-            return item.displayActors.contains { $0.caseInsensitiveCompare(actor) == .orderedSame }
+        case .genre, .director, .actor:
+            return false
         }
     }
 
@@ -970,25 +802,6 @@ final class LibraryViewModel: ObservableObject {
 
     private func isSeriesEpisode(_ movie: Movie) -> Bool {
         SeriesDetector.episodeInfo(for: movie) != nil
-    }
-
-    private func sorter(_ lhs: Movie, _ rhs: Movie) -> Bool {
-        switch sortMode {
-        case .title:
-            return lhs.displayTitle.localizedCaseInsensitiveCompare(rhs.displayTitle) == .orderedAscending
-        case .newest:
-            return (lhs.displayYear ?? Int.min, lhs.displayTitle) > (rhs.displayYear ?? Int.min, rhs.displayTitle)
-        case .oldest:
-            return (lhs.displayYear ?? Int.max, lhs.displayTitle) < (rhs.displayYear ?? Int.max, rhs.displayTitle)
-        case .director:
-            let directorOrder = lhs.displayDirector.localizedCaseInsensitiveCompare(rhs.displayDirector)
-            if directorOrder != .orderedSame { return directorOrder == .orderedAscending }
-            return lhs.displayTitle.localizedCaseInsensitiveCompare(rhs.displayTitle) == .orderedAscending
-        case .recentlyModified:
-            return lhs.modifiedDate > rhs.modifiedDate
-        case .largest:
-            return lhs.fileSize > rhs.fileSize
-        }
     }
 
     private func updateMetadata(for id: String, mutate: (inout MovieMetadata) -> Void) {
@@ -1039,37 +852,14 @@ final class LibraryViewModel: ObservableObject {
 
     private func rebuildLibraryItems() {
         let seriesMetadata = metadataStore.items.compactMapValues { $0.online }
-        libraryItems = LibraryItemBuilder.build(from: allMovies, seriesMetadata: seriesMetadata)
+        let items = LibraryItemBuilder.build(from: allMovies, seriesMetadata: seriesMetadata)
+        let key = CatalogClassification.personKey
+        genreFacets = CatalogFacet.index(items, values: \.displayGenres, key: key)
+        directorFacets = CatalogFacet.index(items, values: \.displayDirectors, key: key)
+        actorFacets = CatalogFacet.index(items, values: \.displayActors, key: key)
+        libraryItems = items
     }
 
-    private nonisolated static func cleanGenericContainerTitles(in movies: [Movie], metadataStore: MetadataStore) -> Int {
-        var cleanedCount = 0
-
-        for movie in movies {
-            var metadata = metadataStore.metadata(for: movie.id)
-            let signature = containerTitleCleanSignature(for: movie)
-            guard metadata.containerTitleSignature != signature else { continue }
-
-            guard let changed = VideoMetadataCleaner.cleanGenericContainerTitleIfPossible(
-                fileURL: movie.fileURL,
-                title: movie.displayTitle
-            ) else {
-                continue
-            }
-            metadata.containerTitleSignature = signature
-            if changed {
-                metadata.technicalSignature = nil
-                cleanedCount += 1
-            }
-            metadataStore.update(metadata, for: movie.id)
-        }
-
-        return cleanedCount
-    }
-
-    private nonisolated static func containerTitleCleanSignature(for movie: Movie) -> String {
-        "v3:\(movie.fileIdentity)"
-    }
 
     private nonisolated static func repairIncompatibleOnlineMetadata(in movies: [Movie], metadataStore: MetadataStore) -> Int {
         var repairedCount = 0

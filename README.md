@@ -14,7 +14,7 @@ Main user-facing capabilities include:
 - detect video files with extensions such as `mkv`, `mp4`, `avi`, `mov`, `m4v`, `mpg`, and `mpeg`
 - parse titles, years, directors, cast hints, and release-noise markers from filenames and folder names
 - detect TV episodes from season folders, `SxxExx`, `1x02`, and numbered-episode conventions
-- group movie files and series episodes into a unified library view
+- browse films and TV series separately, with searchable genre, director, and cast indexes
 - preserve metadata when files are renamed or moved
 - generate covers with `ffmpeg` or reuse sidecar images such as `cover.jpg`, `poster.png`, or `<movie-name>.jpg`
 - enrich movie metadata from TMDb, public TMDb pages, Wikipedia, Wikidata, Apple Search, and web-poster fallbacks
@@ -32,6 +32,7 @@ The codebase is intentionally small and mostly organized as Swift files in `Sour
 | `VideotecaApp.swift` | SwiftUI application entry point. |
 | `Views.swift` | User interface, panels, controls, cards, detail views, and library interaction surfaces. |
 | `LibraryViewModel.swift` | Main `@MainActor` orchestration layer for scanning, filtering, sorting, metadata refresh, organization, subtitle download, and UI state. |
+| `CatalogClassification.swift` | Normalizes genre labels and person credits and indexes catalog filters by title. |
 | `Models.swift` | Core domain model: movies, metadata, online metadata, technical tracks, series episodes, series groups, filters, and sort modes. |
 | `MovieScanner.swift` | Filesystem traversal, video discovery, release-name parsing, sidecar/extras association, identity generation, and metadata adoption hooks. |
 | `MetadataStore.swift` | JSON persistence for per-file metadata and migration/adoption when file identity survives path changes. |

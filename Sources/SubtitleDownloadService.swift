@@ -37,7 +37,7 @@ enum SubtitleDownloadService {
         let data = try await downloadData(from: link)
         let subtitleText = try normalizedSubtitleText(from: data)
         let target = sidecarURL(for: movie.fileURL, languageCode: "it")
-        try subtitleText.write(to: target, atomically: true, encoding: .utf8)
+        try Data(subtitleText.utf8).write(to: target, options: .withoutOverwriting)
         return target
     }
 
