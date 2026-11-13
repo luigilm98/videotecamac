@@ -1,6 +1,6 @@
 # VideotecaMac
 
-VideotecaMac is a native macOS SwiftUI application for managing an offline personal film and TV library stored on local disks or removable drives. It scans video folders, normalizes noisy release names, preserves local metadata across file moves, enriches titles from public online sources, generates or reuses poster artwork, groups TV episodes, and opens media with VLC or the system default player.
+VideotecaMac is a 100% vibecoded native macOS SwiftUI application for managing an offline personal film and TV library stored on local disks or removable drives. It scans video folders, normalizes noisy release names, preserves local metadata across file moves, enriches titles from public online sources, generates or reuses poster artwork, groups TV episodes, and opens media with VLC or the system default player.
 
 From a software-engineering perspective, this repository is a compact case study in local-first personal information management: most value comes from reconciling unreliable filesystem data, user corrections, online metadata, technical media probes, and safe physical file organization.
 
